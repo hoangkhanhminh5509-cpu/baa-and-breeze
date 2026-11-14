@@ -1,0 +1,118 @@
+name: Render Baa & Breeze Episode (Parallel <5m)
+
+on:
+  workflow_dispatch:
+    inputs:
+      composition:
+        description: "Remotion composition ID"
+        required: true
+        default: "BaaAndBreeze-Ep1-Full"
+      telegram_send:
+        description: "Send compressed 1080p (<50MB) to Telegram"
+        type: boolean
+        default: true
+
+jobs:
+  render-chunks:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 15 parallel runners x 1,020 frames = 15,300 frames (8m 30s @ 30fps)
+        chunk: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Render chunk ${{ matrix.chunk }}
+        run: |
+          CHUNK=${{ matrix.chunk }}
+          FRAMES_PER_CHUNK=1020
+          START=$((CHUNK * FRAMES_PER_CHUNK))
+          END=$((START + FRAMES_PER_CHUNK - 1))
+          PADDED=$(printf "%02d" $CHUNK)
+          echo "Rendering frames ${START}-${END} -> chunk-${PADDED}.mp4"
+          npx remotion render "${{ inputs.composition || 'BaaAndBreeze-Ep1-Full' }}" "chunk-${PADDED}.mp4" \
+            --frames="${START}-${END}" \
+            --muted \
+            --concurrency=4
+
+      - name: Upload chunk artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chunk-${{ matrix.chunk }}
+          path: chunk-*.mp4
+          retention-days: 1
+
+  merge-and-deliver:
+    needs: render-chunks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all chunks
+        uses: actions/download-artifact@v4
+        with:
+          pattern: chunk-*
+          merge-multiple: true
+          path: chunks
+
+      - name: Merge video chunks & mux stereo audio
+        run: |
+          mkdir -p out
+          ls -1 chunks/chunk-*.mp4 | sort | sed "s|^|file '../|" | sed "s|$|'|" > chunks/list.txt
+          cat chunks/list.txt
+
+          # Concatenate video-only chunks losslessly
+          ffmpeg -y -f concat -safe 0 -i chunks/list.txt -c copy out/video_only.mp4
+
+          # Concatenate the 5 scene audio tracks seamlessly
+          cat << 'EOF' > chunks/audio_list.txt
+          file '../public/audio/scene1_intro.mp3'
+          file '../public/audio/scene2_cottage.mp3'
+          file '../public/audio/scene3_meadow.mp3'
+          file '../public/audio/scene4_lighthouse.mp3'
+          file '../public/audio/scene5_finale.mp3'
+          EOF
+          ffmpeg -y -f concat -safe 0 -i chunks/audio_list.txt -c:a aac -b:a 192k out/full_audio.m4a
+
+          # Mux 1080p video + stereo audio
+          ffmpeg -y -i out/video_only.mp4 -i out/full_audio.m4a -c:v copy -c:a copy -shortest out/baa-and-breeze-ep1-full.mp4
+          ls -lh out/baa-and-breeze-ep1-full.mp4
+
+      - name: Upload full 1080p episode artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: baa-and-breeze-ep1-full-1080p
+          path: out/baa-and-breeze-ep1-full.mp4
+          retention-days: 7
+
+      - name: Compress under 48MB & send to Telegram (if enabled)
+        if: ${{ inputs.telegram_send != false }}
+        run: |
+          SIZE_BYTES=$(stat -c%s out/baa-and-breeze-ep1-full.mp4)
+          if [ "$SIZE_BYTES" -le 50000000 ]; then
+            TG_FILE="out/baa-and-breeze-ep1-full.mp4"
+          else
+            # 2-pass/CRF 1080p compression to fit Telegram's 50MB bot limit cleanly
+            ffmpeg -y -i out/baa-and-breeze-ep1-full.mp4 -c:v libx264 -preset fast -b:v 620k -maxrate 750k -bufsize 1200k -c:a aac -b:a 96k out/baa-and-breeze-ep1-full-tg.mp4
+            TG_FILE="out/baa-and-breeze-ep1-full-tg.mp4"
+          fi
+          ls -lh "$TG_FILE"
+          curl -sS -X POST "https://api.telegram.org/bot8979255355:AAFeV9tnkiTB02Rc8LlZhV7jWZMT4BTleg4/sendVideo" \
+            -F "chat_id=8953232031" \
+            -F "width=1920" \
+            -F "height=1080" \
+            -F "supports_streaming=true" \
+            -F "caption=Baa & Breeze — Ep. 1 FULL (8m30s, 1080p 16:9, Stereo) rendered via GitHub Actions!" \
+            -F "video=@${TG_FILE};type=video/mp4"
