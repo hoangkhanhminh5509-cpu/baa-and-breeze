@@ -70,20 +70,18 @@ jobs:
       - name: Merge video chunks & mux stereo audio
         run: |
           mkdir -p out
-          ls -1 chunks/chunk-*.mp4 | sort | sed "s|^|file '../|" | sed "s|$|'|" > chunks/list.txt
+          ls -1 "$PWD"/chunks/chunk-*.mp4 | sort | sed "s|^|file '|" | sed "s|$|'|" > chunks/list.txt
           cat chunks/list.txt
 
           # Concatenate video-only chunks losslessly
           ffmpeg -y -f concat -safe 0 -i chunks/list.txt -c copy out/video_only.mp4
 
           # Concatenate the 5 scene audio tracks seamlessly
-          cat << 'EOF' > chunks/audio_list.txt
-          file '../public/audio/scene1_intro.mp3'
-          file '../public/audio/scene2_cottage.mp3'
-          file '../public/audio/scene3_meadow.mp3'
-          file '../public/audio/scene4_lighthouse.mp3'
-          file '../public/audio/scene5_finale.mp3'
-          EOF
+          printf "file '%s/public/audio/scene1_intro.mp3'\n" "$PWD" > chunks/audio_list.txt
+          printf "file '%s/public/audio/scene2_cottage.mp3'\n" "$PWD" >> chunks/audio_list.txt
+          printf "file '%s/public/audio/scene3_meadow.mp3'\n" "$PWD" >> chunks/audio_list.txt
+          printf "file '%s/public/audio/scene4_lighthouse.mp3'\n" "$PWD" >> chunks/audio_list.txt
+          printf "file '%s/public/audio/scene5_finale.mp3'\n" "$PWD" >> chunks/audio_list.txt
           ffmpeg -y -f concat -safe 0 -i chunks/audio_list.txt -c:a aac -b:a 192k out/full_audio.m4a
 
           # Mux 1080p video + stereo audio
