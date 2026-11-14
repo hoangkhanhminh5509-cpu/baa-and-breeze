@@ -67,6 +67,9 @@ jobs:
           merge-multiple: true
           path: chunks
 
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
       - name: Merge video chunks & mux stereo audio
         run: |
           mkdir -p out
